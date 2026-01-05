@@ -1,0 +1,249 @@
+%%The demo of the hybrid model framework with operating conditions(CNN-LSTM)
+%This code was written using GNU Octave-10.3.0, which may also run on MATLAB.
+%This demo is only for illustrating the workflow of the hybrid model framework with operating conditions, as described in "A hybrid modeling framework for predicting the multilayer ceramic capacitor reliability under thermal-electrical coupling operating conditions".
+%The first section creates virtual samples for this demo and can be removed for engineering use.
+clear; clc; close all
+%Basic Definitions
+kB=8.62*10^-5;%The Boltzmann constant
+AR=120*10^-5;%The Richardson constant
+MaxEpochs=1000;%Maxepochs
+%%Generate virtual samples
+time=linspace(0,1000,11);%time
+E0=[6.7 55.56];%Electric field strength range
+T0=[398 398 410.5 410.5 410.5 423]';%Temperature Range
+r0=[0.15 0.27]';%Grain size range
+d0=[21 65]';%Dielectric thickness range
+N0=[13 98]';%Number of dielectric layers
+fun_mean=@(params,xdata) 100-(exp(params(1)./((8.62*10^-5).*xdata(:,4))).*(xdata(:,5).^params(2)).*(xdata(:,6).^(params(3))));%输入温度、电场、时间
+fun_Sd=@(params,xdata) (1-((xdata(:,1)./xdata(:,2)).^params(1)).^xdata(:,3)).*(xdata(:,6).^params(2));%输入制造参数、时间
+fun_LB=@(params,xdata) params(1)+((AR).*(xdata(:,4).^2).*exp((params(2).*sqrt(xdata(:,5))-params(3))./((kB).*xdata(:,4))));%输入温度、电场
+fun_RB=@(params,xdata) (((1-(xdata(:,1)./xdata(:,2)).^params(1)).^xdata(:,3)).*exp(-(xdata(:,6)./xdata(:,7))).^params(2));%时间，特征寿命
+params_mean0=[-0.126 0.11 0.78];
+params_Sd0=[0.97 0.06];
+params_LB0=[-3072.7 -1.88e-4 -0.103];
+params_RB0=[2.96 0.09];
+vn=20;
+for ir1=1:vn
+    Mp(ir1,1)=min(r0)+rand()*(r0(2)-r0(1));
+    Mp(ir1,2)=min(d0)+rand()*(d0(2)-d0(1));
+    Mp(ir1,3)=round(min(N0)+rand()*(N0(2)-N0(1)),0);
+    TEC_0(1)=min(E0)+rand()*(E0(2)-E0(1));
+    TEC_0(2)=min(E0)+rand()*(E0(2)-E0(1));
+    TEC_level(ir1,1:2)=[min(TEC_0),max(TEC_0)];
+    TEC_level(ir1,3)=(abs(TEC_level(ir1,1)-TEC_level(ir1,2)))/5;
+    TEC((ir1-1)*6+1:ir1*6,:)=[T0,[TEC_level(ir1,1)+TEC_level(ir1,3);TEC_level(ir1,1)+2*TEC_level(ir1,3);TEC_level(ir1,1);TEC_level(ir1,1)+TEC_level(ir1,3);TEC_level(ir1,1)+2*TEC_level(ir1,3);TEC_level(ir1,1)+TEC_level(ir1,3)]];
+    for ir2=1:6
+        for ir3=1:width(time)
+            xdata{ir1}((ir2-1)*11+ir3,:)=[Mp(ir1,:),TEC((ir1-1)*6+ir2,:),time(:,ir3)];
+            ydata{ir1}((ir2-1)*11+ir3,1)=fun_mean(params_mean0, xdata{ir1}((ir2-1)*11+ir3,:));
+            ydata{ir1}((ir2-1)*11+ir3,2)=fun_Sd(params_Sd0,xdata{ir1}((ir2-1)*11+ir3,:));
+            ydata{ir1}((ir2-1)*11+ir3,3)=fun_LB(params_LB0,xdata{ir1}((ir2-1)*11+ir3,:));
+            ydata{ir1}((ir2-1)*11+ir3,4)=fun_RB(params_RB0,[xdata{ir1}((ir2-1)*11+ir3,:), ydata{ir1}(ir2,3)]);
+        end
+    end
+    ydata{ir1}=ydata{ir1}.*(0.9+0.2*rand);
+    ydata{ir1}(ydata{ir1}(:,1)>100,1)=100;
+    ydata{ir1}(ydata{ir1}(:,4)>1,4)=1;
+    xdata{ir1}=[xdata{ir1},ydata{ir1}(:,3)];
+end
+initial_guess=[0.01,0.01,0.01];
+for i0=1:width(xdata)
+    ih=height(xdata{i0});
+    xdata0((i0-1)*ih+1:i0*ih,:)=xdata{i0};
+    ydata0((i0-1)*ih+1:i0*ih,:)=ydata{i0};
+end
+
+%%Fit the POF model
+%Performance degradation
+params_mean=lsqcurvefit(fun_mean,[-0.12,0.11,0.78],xdata0,ydata0(:,1));%Mean performance degradation
+params_sigma=lsqcurvefit(fun_Sd,[0.16,0.06],xdata0,ydata0(:,2));%Standard deviation of performance degradation
+mean_POF=fun_mean(params_mean,xdata0);
+sigma_POF=fun_Sd(params_sigma,xdata0);
+%Breakdown
+params_LB=lsqcurvefit(fun_LB,[-3000,-1.8e-4,-0.103],xdata0,ydata0(:,3));%Reliability life
+LB_POF=fun_LB(params_LB,xdata0);
+params_RB=lsqcurvefit(fun_RB,[2.96,0.09],[xdata0(:,1:6),LB_POF],ydata0(:,4));%Breakdown reliability
+RB_POF=fun_RB(params_RB,[xdata0(:,1:6),LB_POF]);
+rmse_POF(:,1)=sqrt(mean((mean_POF-ydata0(:,1)).^2));
+rmse_POF(:,2)=sqrt(mean((sigma_POF-ydata0(:,2)).^2));
+rmse_POF(:,3)=sqrt(mean((LB_POF-ydata0(:,3)).^2));
+rmse_POF(:,4)=sqrt(mean((RB_POF-ydata0(:,4)).^2));
+mean_error=ydata0(:,1)-mean_POF;
+sigma_error=ydata0(:,2)./sigma_POF;
+LB_error=ydata0(:,3)./LB_POF;
+RB_error=ydata0(:,4)./RB_POF;
+for ir1=1:vn
+    ydata_mean{ir1}=[ydata{ir1}(:,1),mean_POF((ir1-1)*66+1:ir1*66),mean_error((ir1-1)*66+1:ir1*66)];
+    ydata_sigma{ir1}=[ydata{ir1}(:,2),sigma_POF((ir1-1)*66+1:ir1*66),sigma_error((ir1-1)*66+1:ir1*66)];
+    ydata_LB{ir1}=[ydata{ir1}(:,3),LB_POF((ir1-1)*66+1:ir1*66),LB_error((ir1-1)*66+1:ir1*66)];
+    ydata_RB{ir1}=[ydata{ir1}(:,4),RB_POF((ir1-1)*66+1:ir1*66),RB_error((ir1-1)*66+1:ir1*66)];
+end
+
+%%Correction terms for the POF model prediction
+ydata_e=ydata_mean;%Target: ydata_mean--Mean performance degradation, ydata_LB--Reliability life
+flold_k = 4;
+fold_size=vn/flold_k;
+samples=1:vn;
+initial_groups = cell(flold_k, 1);
+for fold = 1:flold_k
+    start_idx = (fold-1)*fold_size + 1;
+    end_idx = fold*fold_size;
+    initial_groups{fold} = samples(start_idx:end_idx);
+end
+train_sets = cell(flold_k, 1);
+test_sets = cell(flold_k, 1);
+for test_fold = 1:flold_k
+    test_sets{test_fold} = initial_groups{test_fold};
+    train_sets{test_fold} = [];
+    for train_fold = 1:flold_k
+        if train_fold ~= test_fold
+            train_sets{test_fold} = [train_sets{test_fold}, initial_groups{train_fold}];
+        end
+    end
+end
+for i=1:flold_k
+    for i_t=1:5
+        P_test(66*(i_t-1)+1:66*i_t,:)= xdata{test_sets{i}(i_t)}(:,[4 5 6]);
+        T_test(66*(i_t-1)+1:66*i_t,:)= ydata_e{test_sets{i}(i_t)}(:,3);
+    end
+    for i_t2=1:15
+        P_train(66*(i_t2-1)+1:66*i_t2,:)=xdata{train_sets{i}(i_t2)}(:,[4 5 6]);
+        T_train(66*(i_t2-1)+1:66*i_t2,:)=ydata_e{train_sets{i}(i_t2)}(:,3);
+    end
+    f_=size(P_train, 2);
+    [x_train, ps_input]=mapminmax(P_train', 0, 1);
+    x_test = mapminmax('apply', P_test', ps_input);
+    [y_train, ps_output]=mapminmax(T_train', 0, 1);
+    y_test = mapminmax('apply', T_test', ps_output);
+    XrTrain = cell(size(x_train,2),1);
+    YrTrain = zeros(size(y_train,2),1);
+    for itrain=1:size(x_train,2)
+        XrTrain{itrain,1} = x_train(:,itrain);
+        YrTrain(itrain,:) = y_train(:,itrain);
+    end
+    XrTest = cell(size(x_test,2),1);
+    YrTest = zeros(size(y_test,2),1);
+    for itest=1:size(x_test,2)
+        XrTest{itest,1} = x_test(:,itest);
+        YrTest(itest,:) = y_test (:,itest);
+    end
+
+    %CNN-LSTM with Bayesian optimization
+    fitness= @fical;
+    optimVars = [optimizableVariable('NumOfUnits', [10, 100], 'Type', 'integer')
+        optimizableVariable('InitialLearnRate', [1e-4, 1e-2], 'Transform', 'log')
+        optimizableVariable('L2Regularization', [1e-10, 1e-2], 'Transform', 'log')];
+    BayesObject = bayesopt(fitness, optimVars, ...
+        'MaxTime', Inf, ...
+        'IsObjectiveDeterministic', false, ...
+        'MaxObjectiveEvaluations', 10, ...
+        'Verbose', 1, ...
+        'UseParallel', false);
+    NumOfUnits=BayesObject.XAtMinEstimatedObjective.NumOfUnits;
+    InitialLearnRate=BayesObject.XAtMinEstimatedObjective.InitialLearnRate;
+    L2Regularization=BayesObject.XAtMinEstimatedObjective.L2Regularization;
+    numFeatures=size(P_train,2);
+    layers = [sequenceInputLayer([numFeatures 1 1],'Name','input')
+        sequenceFoldingLayer('Name','fold')
+        convolution2dLayer([3 1],32,'Padding','same','WeightsInitializer','he','Name','conv','DilationFactor',1);
+        batchNormalizationLayer('Name','bn')
+        eluLayer('Name','elu')
+        averagePooling2dLayer(1,'Stride',6,'Name','pool1')
+        sequenceUnfoldingLayer('Name','unfold')
+        flattenLayer('Name','flatten')
+        lstmLayer(100,'Name','lstm1','RecurrentWeightsInitializer','He','InputWeightsInitializer','He')
+        lstmLayer(NumOfUnits,'OutputMode',"last",'Name','bil4','RecurrentWeightsInitializer','He','InputWeightsInitializer','He')
+        dropoutLayer(0.25,'Name','drop3')
+        fullyConnectedLayer(1,'Name','fc')
+        regressionLayer('Name','output')    ];
+    layers = layerGraph(layers);
+    layers = connectLayers(layers,'fold/miniBatchSize','unfold/miniBatchSize');
+    options = trainingOptions( 'adam', ...
+        'MaxEpochs',MaxEpochs, ...
+        'GradientThreshold',0.5, ...
+        'InitialLearnRate',InitialLearnRate, ...
+        'LearnRateSchedule','piecewise', ...
+        'LearnRateDropPeriod',400, ...
+        'LearnRateDropFactor',0.2, ...
+        'L2Regularization',L2Regularization,...
+        'Verbose',false, ...
+        'Plots','none');
+    net = trainNetwork(XrTrain,YrTrain,layers,options);
+    trainedNets{fold} = net;
+    YPredtr=predict(net,XrTrain);
+    YPred=predict(net,XrTest);
+    t_sim1=double(YPredtr');
+    t_sim2=double(YPred');
+    CNNLSTMoutput_tra=mapminmax('reverse',t_sim1,ps_output);
+    CNNLSTMoutput_test=mapminmax('reverse',t_sim2,ps_output);
+    T_sim1 = double(CNNLSTMoutput_tra);
+    T_sim2 = double(CNNLSTMoutput_test);
+    mse1 = sum((T_sim1 - T_train').^2)./size(T_sim1,2);
+    mse2 = sum((T_sim2 - T_test').^2)./size(T_sim2,2);
+    fitness_MSE(i,:)=sum((T_sim1-T_train').^2)./size(T_sim1,2);
+    trainedNets{i}=net;
+end
+[~,bestFold]=min(fitness_MSE);
+best_net=trainedNets{bestFold};
+
+%%Prediction results
+POF_result=[];
+HM_result=[];
+Real_result=[];
+for iy=1:width(ydata_e)
+    Real_result=[Real_result;ydata_e{iy}(:,1)];
+    POF_result=[POF_result;ydata_e{iy}(:,2)];
+    for in=1:height(ydata_e{iy})
+        HM_x=mapminmax('apply',xdata{iy}(in,4:6),ps_output);
+        HM_error_n=predict(best_net,HM_x');
+        HM_error(in)=mapminmax('reverse',HM_error_n,ps_output);
+        HM_result0(in)=ydata_e{iy}(in,2)'+HM_error(in)';
+    end
+    HM_result=[HM_result;HM_result0'];
+end
+Z_POF_RMSE=sqrt(sum((Real_result-POF_result).^2)./size(Real_result,1));
+Z_HM_RMSE=sqrt(sum((Real_result-HM_result).^2)./size(Real_result,1));
+
+%% BO-CNN-LSTM
+function fitness=fical(optVars)
+XrTrain = evalin('base', 'XrTrain');
+YrTrain = evalin('base', 'YrTrain');
+ps_output = evalin('base', 'ps_output');
+T_train = evalin('base', 'T_train');
+MaxEpochs=evalin('base', 'MaxEpochs');
+f_=evalin('base', 'f_');
+numFeatures  = f_;
+numResponses = 1;
+FiltZise = 10;
+layers = [sequenceInputLayer([numFeatures 1 1],'Name','input')
+    sequenceFoldingLayer('Name','fold')
+    convolution2dLayer([FiltZise 1],32,'Padding','same','WeightsInitializer','he','Name','conv','DilationFactor',1);
+    batchNormalizationLayer('Name','bn')
+    eluLayer('Name','elu')
+    averagePooling2dLayer(1,'Stride',FiltZise,'Name','pool1')
+    sequenceUnfoldingLayer('Name','unfold')
+    flattenLayer('Name','flatten')
+    lstmLayer(50,'Name','lstm1','RecurrentWeightsInitializer','He','InputWeightsInitializer','He')
+    lstmLayer(optVars.NumOfUnits,'OutputMode',"last",'Name','bil4','RecurrentWeightsInitializer','He','InputWeightsInitializer','He')
+    dropoutLayer(0.25,'Name','drop3')
+    fullyConnectedLayer(numResponses,'Name','fc')
+    regressionLayer('Name','output')    ];
+layers = layerGraph(layers);
+layers = connectLayers(layers,'fold/miniBatchSize','unfold/miniBatchSize');
+options = trainingOptions( 'adam', ...
+    'MaxEpochs',MaxEpochs, ...
+    'GradientThreshold',1, ...
+    'InitialLearnRate',optVars.InitialLearnRate, ...
+    'LearnRateSchedule','piecewise', ...
+    'LearnRateDropPeriod',70, ...
+    'LearnRateDropFactor',0.2, ...
+    'L2Regularization',optVars.L2Regularization,...
+    'Verbose',false, ...
+    'Plots','none');
+net = trainNetwork(XrTrain,YrTrain,layers,options);
+YPredtr = predict(net,XrTrain);
+t_sim1 =double(YPredtr');
+CNNLSTMoutput_tra=mapminmax('reverse',t_sim1,ps_output);
+T_sim1=double(CNNLSTMoutput_tra);
+fitness=sum((T_sim1-T_train').^2)./size(T_sim1,2);
+end
